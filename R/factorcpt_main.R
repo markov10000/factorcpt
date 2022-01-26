@@ -1,47 +1,92 @@
 # r = NULL; bn.op = 2; sig.lev = .01; max.q = NULL; q.seq = NULL; scales = NULL; rule = NULL; B = 200; do.diag = idio.diag = FALSE; do.parallel = FALSE
 library(doParallel)
 
-factor.seg.alg <- function(x, r = NULL, bn.op = 2, sig.lev = .01, max.q = NULL, q.seq = NULL,
-                           scales = NULL, rule = NULL, B = 200, idio.diag = FALSE,
-                           do.parallel = FALSE, n.cores = min(parallel::detectCores() - 1, 3)){
+factor.seg.alg <- function(x, ...){
 
 	p <- dim(x)[1]
 	n <- dim(x)[2]
-	q.len <- 5
-	dw <- round(min(log(n)^2, n^(6/7)/4))
-	
-	if(is.null(max.q)) max.q <- max(round(20, sqrt(min(n, p))))
-	if(is.null(rule)) rule <- round(log(n, 2)/2)
-	if(do.parallel){
-	  cl <- parallel::makeCluster(n.cores); doParallel::registerDoParallel(cl)
-	}
-  if(is.null(scales)) scales <- -(1:floor(log(log(n, 2), 2)))
-	
-	gfm <- get.factor.model(x, max.q = max.q, q = r, bn.op = bn.op)
-	if(is.null(r)) q.hat <- gfm$q.hat else q.hat <- r
-	if(is.null(q.seq)) q.seq <- sort(unique(c(max(1, q.hat), max.q, 
-	                                          round(seq(max(1, q.hat), max(min(p - 1, 2 * q.hat), max.q), length.out = q.len)))), 
-	                                 decreasing = FALSE)
 
+  # -------------------- Input Checks -------------------
+  
+  args <- list(...)
+  # ----- Fill in Defaults -----
+  if(is.null(args$B)) args$B <- 200
+  if(is.null(args$bn.op)) args$bn.op <- 2
+  if(is.null(args$r)) args$r <- NULL
+  if(is.null(args$gfm.norm)) args$gfm.norm <- TRUE
+  if(is.null(args$sig.lev)) args$sig.lev <- .01
+  if(is.null(args$max.q)) args$max.q <- max(round(20, sqrt(min(n, p))))
+  if(is.null(args$q.seq)) args$q.seq <- NULL
+  if(is.null(args$q.len)) args$q.len <- 5
+  if(is.null(args$factor.as.input)) args$factor.as.input <- FALSE
+  if(is.null(args$scales)) args$scales <- -(1:floor(log(log(n, 2), 2)))
+  if(is.null(args$rule)) args$rule <- round(log(n, 2)/2)
+  if(is.null(args$dw)) args$dw <- round(min(log(n)^2, n^(6/7)/4))
+  if(is.null(args$idio.diag)) args$idio.diag <- FALSE
+  if(is.null(args$do.parallel)) args$do.parallel <- FALSE
+  if(is.null(args$n.cores)) args$n.cores <- min(parallel::detectCores() - 1, 3)
+
+
+	if(args$do.parallel){
+	  cl <- parallel::makeCluster(args$n.cores); doParallel::registerDoParallel(cl)
+	}
+
+	# ----- Create Output Object -----
+  factorcpt_object <- list(gfm = NULL, 
+                        r = NULL, 
+                        q.seq = NULL,
+                        common.res = NULL, 
+                        common.est.cps = NULL, 
+                        idio.res = NULL, 
+                        idio.est.cps = NULL
+	            					)
+
+	# -------------------- Get Factor Model -------------------
+	gfm <- get.factor.model(x, max.q = args$max.q, q = args$r, bn.op = args$bn.op, normalisation = args$gfm.norm)
+	if(is.null(args$r)) q.hat <- gfm$q.hat else q.hat <- args$r
+	if(is.null(args$q.seq)) {
+	if(args$q.len == 1) args$q.seq <- args$q.hat
+	if(args$q.len > 1)
+		args$q.seq <- sort(unique(c(max(1, q.hat), args$max.q, 
+	                                          round(seq(max(1, q.hat), max(min(p - 1, 2 * q.hat), args$max.q), length.out = args$q.len)))), 
+	                                 decreasing = FALSE)
+	}
+	factorcpt_object$gfm <- gfm
+ 	factorcpt_object$q.seq <- args$q.seq
+
+	# -------------------- Estimate Common Change Points -------------------	
 	est.cps <- cs.list <- list()
-	for(qq in q.seq){
-		cs <- common.seg.alg(gfm, q = qq, scales = scales, sig.lev = sig.lev, 
-		                     rule = rule, dw = dw, B = B, do.parallel = do.parallel)
+	if(q.hat>0){
+	for(qq in args$q.seq){
+		cs <- common.seg.alg(gfm, q = qq, scales = args$scales, sig.lev = args$sig.lev, 
+		                     rule = args$rule, dw = args$dw, B = args$B, do.parallel = args$do.parallel)
 		est.cps <- c(est.cps, list(cs$est.cps))
 		cs.list <- c(cs.list, list(cs))
 	}
 	qq <- max(which(unlist(lapply(est.cps, length)) == max(unlist(lapply(est.cps, length)))))
-	q <- q.seq[qq]
+	q <- args$q.seq[qq]
 	cs <- cs.list[[qq]]
-  common.est.cps <- est.cps[[qq]]
+	common.est.cps <- est.cps[[qq]]
+	factorcpt_object$common.res <- cs.list
+ 	factorcpt_object$r <- q
+ 	factorcpt_object$common.est.cps <- common.est.cps
+	}else{
+		q <- 0 # No factor stucture, No common change points
+	}
 
-	is <- idio.seg.alg(gfm, q = q, scales = scales, sig.lev = sig.lev, rule = rule, dw = dw, 
-	                   do.diag = idio.diag, B = B, do.parallel = do.parallel)
+	# -------------------- Estimate Idiosyncratic Change Points -------------------	
+	is <- idio.seg.alg(gfm, q = q, scales = args$scales, sig.lev = args$sig.lev, rule = args$rule, dw = args$dw, 
+	                   do.diag = args$idio.diag, B = args$B, do.parallel = args$do.parallel)
 	idio.est.cps <- is$est.cps
-	if(do.parallel) parallel::stopCluster(cl)
+	factorcpt_object$idio.res = is
+	factorcpt_object$idio.est.cps <- idio.est.cps
+	if(args$do.parallel) parallel::stopCluster(cl)
 
-	return(list(common.res = cs.list, r = q, common.est.cps = common.est.cps, 
-	            idio.res = is, idio.est.cps = idio.est.cps, gfm = gfm, q.seq = q.seq))
+ # -------------------- Output -------------------
+
+ 
+ 
+	return(factorcpt_object)
 
 }
 
